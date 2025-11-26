@@ -18,33 +18,43 @@ from panglom_suite import plotting
 
 base_dir = dataio.get_config_file()['base_dir']
 
-# meanbrain_tag = '20241021'
-meanbrain_tag = '20241028_tall'
+meanbrain_tag = '20250510'
 brain_dir = os.path.join(base_dir, 'mean_brain', meanbrain_tag)
 
 
-# %% REFERENCE BRAIN
-# reference_filename = 'TSeries-20240617-006_anatomical.nii'
-# reference_filename = 'TSeries-20240818-013_anatomical.nii'
-# reference_filename = 'TSeries-20240818-013_anatomical.nii'
-# reference_filename = 'TSeries-20240927-010_anatomical.nii'
-reference_filename = 'TSeries-20240927-009_anatomical.nii'
-# reference_filename = 'TSeries-20240926-014_anatomical.nii'
-# reference_filename = 'TSeries-20240925-001_anatomical.nii'
-# reference_filename = 'TSeries-20240927-006_anatomical.nii'
-# reference_filename = 'TSeries-20241003-004_anatomical.nii'
+# %% REFERENCE BRAIN CANDIDATES
 
-# 2-channel xyz
-reference_brain = ants.image_read(os.path.join(brain_dir, reference_filename))
-spacing = reference_brain.spacing
+def show_reference_brain(reference_fn):
+    reference_brain = ants.image_read(os.path.join(brain_dir, reference_fn))
+    fh, ax = plt.subplots(2, 2, figsize=(7, 4))
+    ax[0,0].imshow(ants.split_channels(reference_brain)[0].mean(axis=2).T, cmap='Reds')
+    ax[0,1].imshow(ants.split_channels(reference_brain)[1].mean(axis=2).T, cmap='Greens')
+    ax[1,0].imshow(ants.split_channels(reference_brain)[0].max(axis=2).T, cmap='Reds')
+    ax[1,1].imshow(ants.split_channels(reference_brain)[1].max(axis=2).T, cmap='Greens')
+    ax[0,0].set_ylabel('Mean')
+    ax[1,0].set_ylabel('Max')
+    ax[0,0].set_title('tdTomato')
+    ax[0,1].set_title('syt1GCaMP6f')
+    fh.suptitle(reference_fn)
 
-print('Brain spacing is {}'.format(spacing))
+reference_fns = ['TSeries-20241231-001_anatomical.nii.gz',
+                  'TSeries-20250107-001_anatomical.nii.gz', # 20250127 meanbrain
+                  'TSeries-20250111-009_anatomical.nii.gz',
+                  'TSeries-20250118-001_anatomical.nii.gz',]
 
-fh, ax = plt.subplots(1, 2, figsize=(8, 4))
-ax[0].imshow(ants.split_channels(reference_brain)[0].max(axis=2).T, cmap='Reds')
-ax[1].imshow(ants.split_channels(reference_brain)[1].max(axis=2).T, cmap='Greens')
+_=[show_reference_brain(fn) for fn in reference_fns]
 
 # %%
+
+chosen_reference_fn = reference_fns[0]
+
+_=show_reference_brain(chosen_reference_fn)
+reference_brain = ants.image_read(os.path.join(brain_dir, chosen_reference_fn))
+spacing = reference_brain.spacing
+print('Brain spacing is {}'.format(spacing))
+
+
+ # %%
 
 
 def computeMeanbrain(brain_directory,
@@ -56,7 +66,7 @@ def computeMeanbrain(brain_directory,
     """
     Generate a meanbrain from a list of anatomical scans.
 
-    :brain_directory: contains anatomical ANTs images to register, fns end in '_anatomical.nii'
+    :brain_directory: contains anatomical ANTs images to register, fns end in '_anatomical.nii.gz'
     :reference_brain: two-channel ANTs image to register each brain to
     :type_of_transform: for ants.registration()
     :do_bias_correction: [bool]
@@ -65,7 +75,7 @@ def computeMeanbrain(brain_directory,
     t0 = time.time()
     corrected_red = []
     corrected_green = []
-    file_paths = glob.glob(os.path.join(brain_directory, '*_anatomical.nii'))
+    file_paths = glob.glob(os.path.join(brain_directory, '*_anatomical.nii.gz'))
 
     if plot_alignment_multipanel:
         stride = 8
@@ -114,20 +124,20 @@ def computeMeanbrain(brain_directory,
         red_reg = ants.apply_transforms(fixed=fixed_red,
                                         moving=individual_red,
                                         transformlist=reg['fwdtransforms'],
-                                        interpolator='nearestNeighbor',
+                                        interpolator='linear',
                                         defaultvalue=0,
                                         verbose=False)
 
         green_reg = ants.apply_transforms(fixed=fixed_green,
                                           moving=individual_green,
                                           transformlist=reg['fwdtransforms'],
-                                          interpolator='nearestNeighbor',
+                                          interpolator='linear',
                                           defaultvalue=0)
 
-        red_reg = red_reg.numpy().astype('float')
+        red_reg = red_reg.numpy().astype(np.float64)
         red_reg[red_reg == 0] = np.nan
 
-        green_reg = green_reg.numpy().astype('float')
+        green_reg = green_reg.numpy().astype(np.float64)
         green_reg[green_reg == 0] = np.nan
 
         corrected_red.append(red_reg)

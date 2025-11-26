@@ -39,8 +39,8 @@ def getXcorr(a, b):
 
 def config_matplotlib():
     plt.rcParams['svg.fonttype'] = 'none'
-    plt.rcParams.update({'font.family': 'sans-serif'})
-    plt.rcParams.update({'font.sans-serif': 'Helvetica'})
+    # plt.rcParams.update({'font.family': 'sans-serif'})
+    # plt.rcParams.update({'font.sans-serif': 'Helvetica'})
 
 
 def clean_axes(ax):

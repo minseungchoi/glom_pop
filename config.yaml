@@ -1,5 +1,7 @@
 update_date: '2022-03-10'
-sync_dir: '/Users/mhturner/Dropbox/ClandininLab/Analysis/glom_pop/sync'
-images_dir: '/Users/mhturner/Dropbox/ClandininLab/Analysis/glom_pop/images'
-save_directory: '/Users/mhturner/Dropbox/ClandininLab/Analysis/glom_pop/fig_panels'
-included_gloms: [LC4, LC6, LC9, LC11, LC12, LC15, LC16, LC17, LC18, LC21, LC26, LPLC1, LPLC2]
+base_dir: '/run/media/minseung/analysis/glom_project_2'
+sync_dir: '/run/media/minseung/analysis/glom_project_2'
+images_dir: '/run/media/minseung/analysis/glom_project_2/images'
+save_directory: '/run/media/minseung/analysis/glom_project_2/fig_panels'
+included_gloms: [LC4, LC6, LC9, LC10, LC11, LC12, LC15, LC16, LC17, LC18, LC21, LC26, LPLC1, LPLC2, LPLC4]
+# included_gloms: [LC10, LC18, LC12+17]

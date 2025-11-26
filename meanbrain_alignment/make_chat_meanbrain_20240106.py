@@ -18,21 +18,12 @@ from panglom_suite import plotting
 
 base_dir = dataio.get_config_file()['base_dir']
 
-# meanbrain_tag = '20241021'
-meanbrain_tag = '20241028_tall'
+meanbrain_tag = '20250106'
 brain_dir = os.path.join(base_dir, 'mean_brain', meanbrain_tag)
 
 
 # %% REFERENCE BRAIN
-# reference_filename = 'TSeries-20240617-006_anatomical.nii'
-# reference_filename = 'TSeries-20240818-013_anatomical.nii'
-# reference_filename = 'TSeries-20240818-013_anatomical.nii'
-# reference_filename = 'TSeries-20240927-010_anatomical.nii'
-reference_filename = 'TSeries-20240927-009_anatomical.nii'
-# reference_filename = 'TSeries-20240926-014_anatomical.nii'
-# reference_filename = 'TSeries-20240925-001_anatomical.nii'
-# reference_filename = 'TSeries-20240927-006_anatomical.nii'
-# reference_filename = 'TSeries-20241003-004_anatomical.nii'
+reference_filename = 'TSeries-20240925-001_anatomical.nii'
 
 # 2-channel xyz
 reference_brain = ants.image_read(os.path.join(brain_dir, reference_filename))
