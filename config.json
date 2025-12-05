@@ -1,0 +1,11 @@
+{
+    "patterns": {
+        "video": "/home/minseung/data/BrukerCamera/{date}/{series}/cam_*.mp4",
+        "camera_timestamps": "/home/minseung/data/BrukerCamera/{date}/{series}/cam_*.txt",
+        "fictrac": "/home/minseung/data/BrukerCamera/{date}/{series}/*.dat",
+        "brain": "/run/media/minseung/data/ImagingData/Bruker/bts/{date}/bts/line/percentile/p15/*-{series_3d}_reg.nii.gz",
+        "brain_xml": "/run/media/minseung/data2/ImagingData/Bruker/{date}/*-{series_3d}.xml",
+        "voltage": "/run/media/minseung/data2/ImagingData/Bruker/{date}/*-{series_3d}_Cycle00001_VoltageRecording_001.csv",
+        "voltage_xml": "/run/media/minseung/data2/ImagingData/Bruker/{date}/*-{series_3d}_Cycle00001_VoltageRecording_001.xml"
+    }
+}
