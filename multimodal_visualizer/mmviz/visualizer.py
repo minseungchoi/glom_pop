@@ -16,6 +16,10 @@ from .widgets import TimeSeriesPlotter, VideoViewer, DataLoader, PlaybackControl
 from visanalysis.analysis.imaging_data import ImagingDataObject
 from visanalysis.util import h5io
 from . import utils
+from glom_pop import dataio
+
+FICTRAC_FILTER_DURATION = 0.75
+FICTRAC_FILTER_POLYORDER = 3
 
 class MultiModalVisualizer:
     def __init__(self, no_brain=False, series_name=None):
@@ -24,6 +28,7 @@ class MultiModalVisualizer:
         self.series_name = series_name
         
         # Data containers
+        self.ID = None
         self.brain_data = None
         self.brain_metadata = None
         self.fictrac_data = None
@@ -169,7 +174,12 @@ class MultiModalVisualizer:
                     if header is not None:
                         header = [h.decode('utf-8') if isinstance(h, bytes) else h for h in header]
                         ft_data = pd.DataFrame(ft_dset[:], columns=header)
-                        self.fictrac_data = self.process_fictrac_data(ft_data, camera_timestamps=self.video_timestamps_unix)
+                        self.fictrac_data = dataio.process_fictrac_data(
+                            ft_data,
+                            timestamps=self.video_timestamps_unix,
+                            filter_duration=FICTRAC_FILTER_DURATION,
+                            filter_polyorder=FICTRAC_FILTER_POLYORDER
+                        )
                         if self.fictrac_data:
                             print("Loaded Fictrac data from ImagingDataObject.")
         except Exception as e:
@@ -177,10 +187,10 @@ class MultiModalVisualizer:
 
         if self.fictrac_data is None and fictrac_path and os.path.exists(fictrac_path):
             print(f"Loading Fictrac from {fictrac_path}...")
-            self.load_fictrac_direct(fictrac_path, camera_timestamps=self.video_timestamps_unix)
+            self.load_fictrac_direct(fictrac_path, timestamps=self.video_timestamps_unix)
         elif self.fictrac_data is None:
             print("No Fictrac data loaded.")
-            self.fictrac_data = {'timestamp': [], 'fwd_vel': [], 'turning_vel': []}
+            self.fictrac_data = {'timestamps': [], 'fwd_vel': [], 'turning_vel': []}
 
         # 5. Load Stimulus
         print(f"Loading Stimulus from ID...")
@@ -202,85 +212,7 @@ class MultiModalVisualizer:
         
         print("Data loading complete.")
 
-    def process_fictrac_data(self, ft_data, camera_timestamps=None):
-        # 1. Handle Timestamps
-        if camera_timestamps is not None and len(camera_timestamps) == len(ft_data):
-            print("  Using Camera Timestamps for Fictrac.")
-            timestamp = camera_timestamps
-        else:
-            print("  Using Fictrac Timestamps for Fictrac.")
-            if 'timestamp' in ft_data.columns:
-                ts = ft_data['timestamp'].values
-            else:
-                ts = ft_data.iloc[:, 21].values
-
-            # Check for Unix timestamps (large values)
-
-            # Let's do a safe convert if object
-            if ts.dtype == object:
-                ts = pd.to_numeric(ts, errors='coerce')
-                
-            # Logic:
-            # Case 1: All entries are epoch time (> 1e10)
-            # Case 2: Only first entry is epoch time (> 1e10)
-            # Case 3: None are epoch time (all relative ms)
-            
-            is_unix = ts > 1e10
-            
-            if np.all(is_unix):
-                # Case 1: All Unix
-                print("  Detected ALL Unix timestamps. Using them directly.")
-                
-            elif is_unix[0] and not np.any(is_unix[1:]):
-                # Case 2: First only is Unix
-                print("  Detected Single Unix timestamp at start. Treating the rest as relative ms from start.")
-                
-                # make ts all epoch time
-                ts[1:] += ts[0]
-
-            else: 
-                # Bad timestamps
-                print("  Bad Fictrac timestamps.")
-            
-            timestamp = ts / 1e3 # ms -> sec
-
-        # 2. Calculate velocities
-        # Try to find columns by name, otherwise by index        
-        if 'rel_vec_world_y' in ft_data.columns and 'rel_vec_world_z' in ft_data.columns:
-            y_rot = ft_data['rel_vec_world_y'].values
-            z_rot = ft_data['rel_vec_world_z'].values
-        else:
-            y_rot = ft_data.iloc[:, 6].values
-            z_rot = ft_data.iloc[:, 7].values
-
-        y_rot_deg = np.rad2deg(y_rot) * self.fps
-        z_rot_deg = np.rad2deg(z_rot) * self.fps
-        
-        # Filter
-        window_length = 151
-        if len(y_rot_deg) <= window_length:
-            window_length = len(y_rot_deg)
-            if window_length % 2 == 0: window_length -= 1
-        
-        if window_length > 3:
-            yrot_filt = savgol_filter(y_rot_deg, window_length, 3)
-            zrot_filt = savgol_filter(z_rot_deg, window_length, 3)
-        else:
-            yrot_filt = y_rot_deg
-            zrot_filt = z_rot_deg
-        
-        ball_diameter = 9 # mm
-        ball_circumference = np.pi * ball_diameter # mm
-        fwd_vel = (yrot_filt/360) * ball_circumference # deg/sec --> mm/sec
-        turning_vel = zrot_filt # deg/sec
-        
-        return {
-            'timestamp': timestamp,
-            'fwd_vel': fwd_vel,
-            'turning_vel': turning_vel
-        }
-
-    def load_fictrac_direct(self, filepath, camera_timestamps=None):
+    def load_fictrac_direct(self, filepath, timestamps=None):
         
         # Copied/Adapted from dataio.py
         try:
@@ -290,15 +222,20 @@ class MultiModalVisualizer:
             ft_data[21] = pd.to_numeric(ft_data[21], errors='coerce')
             
             # Process
-            self.fictrac_data = self.process_fictrac_data(ft_data, camera_timestamps)
+            self.fictrac_data = dataio.process_fictrac_data(
+                ft_data,
+                timestamps= timestamps,
+                filter_duration=FICTRAC_FILTER_DURATION,
+                filter_polyorder=FICTRAC_FILTER_POLYORDER
+            )
             
             if self.fictrac_data is None:
                  print("Error: No valid Fictrac data remaining after filtering.")
-                 self.fictrac_data = {'timestamp': [], 'fwd_vel': [], 'turning_vel': []}
-                 
+                 self.fictrac_data = {'timestamps': [], 'fwd_vel': [], 'turning_vel': []}
+            
         except Exception as e:
             print(f"Error loading Fictrac file: {e}")
-            self.fictrac_data = {'timestamp': [], 'fwd_vel': [], 'turning_vel': []}
+            self.fictrac_data = {'timestamps': [], 'fwd_vel': [], 'turning_vel': []}
 
 
     def load_stimulus_from_id(self):
@@ -329,7 +266,7 @@ class MultiModalVisualizer:
 
     def synchronize_and_plot(self):
         # Fictrac
-        self.plotter_widget.plot_fictrac(self.fictrac_data['timestamp'], 
+        self.plotter_widget.plot_fictrac(self.fictrac_data['timestamps'], 
                                          self.fictrac_data['fwd_vel'], 
                                          self.fictrac_data['turning_vel'],
                                          t0=self.start_time_unix,
@@ -464,8 +401,8 @@ class MultiModalVisualizer:
         max_time = 0
         if self.video_timestamps_relative is not None:
             max_time = self.video_timestamps_relative[-1]
-        elif self.fictrac_data and len(self.fictrac_data['timestamp']) > 0:
-            max_time = self.fictrac_data['timestamp'][-1]
+        elif self.fictrac_data and len(self.fictrac_data['timestamps']) > 0:
+            max_time = self.fictrac_data['timestamps'][-1]
              
         if next_time > max_time:
             next_time = max_time

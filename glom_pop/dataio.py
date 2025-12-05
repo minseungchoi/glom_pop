@@ -8,6 +8,7 @@ import inspect
 import os
 import shutil
 import glob
+import warnings
 
 import matplotlib.pyplot as plt
 import h5py
@@ -196,18 +197,154 @@ def get_ft_datapath(ID, ft_dir):
 
 
 
+def process_fictrac_data(ft_data, 
+                         exclude_thresh=None, 
+                         timestamps=None, 
+                         ball_diameter=9, 
+                         filter_duration=0.75, 
+                         filter_polyorder=3):
+    """
+    Process raw Fictrac data: handle timestamps, calculate velocities, filter.
+    
+    Args:
+        ft_data: DataFrame with Fictrac data
+        exclude_thresh: threshold for exclusion
+        timestamps: optional aligned timestamps to use instead of Fictrac's [sec]
+            If provided, will be used as-is and not modified.
+            If not provided, will use Fictrac timestamps, relative to first timestamp.
+        ball_diameter: diameter of ball in mm
+        filter_duration: duration of the Savitzky-Golay filter window in seconds (default: 0.75)
+        filter_polyorder: order of the Savitzky-Golay filter (default: 3)
+    Returns:
+        dict with processed data
+    """
+    # 1. Handle Timestamps
+    if len(timestamps) != len(ft_data):
+        warnings.warn('DataIO: Timestamps do not match Fictrac data length. Using Fictrac timestamps.')
+        timestamps = None
+    
+    if timestamps is not None:
+        print('DataIO: Using provided timestamps instead of Fictrac timestamps.')
+    else:
+        # Try to find timestamp column
+        if 'timestamp' in ft_data.columns:
+            ts = ft_data['timestamp'].values
+        elif ft_data.shape[1] > 21:
+            ts = ft_data.iloc[:, 21].values
+        else:
+            # Fallback or error?
+            ts = np.arange(len(ft_data)) # Dummy
+        
+        # Safe convert
+        if ts.dtype == object:
+            ts = pd.to_numeric(ts, errors='coerce')
+            
+        # Robust Timestamp Logic
+        is_unix = ts > 1e10
+        
+        if np.all(is_unix):
+            # Case 1: All Unix
+            pass
+        elif is_unix[0] and not np.any(is_unix[1:]):
+            # Case 2: First only is Unix
+            # make ts all epoch time
+            ts[1:] += ts[0]
+        else:
+            # Case 3: Relative
+            pass
+            
+        timestamps = ts / 1e3 # ms -> sec
+
+        # Use relative timestamps with respect to first timestamp
+        if len(timestamps) > 0:
+            timestamps = timestamps - timestamps[0]
+
+    # 2. Calculate Velocities
+    # Try named columns first
+    if 'rel_vec_world_y' in ft_data.columns and 'rel_vec_world_z' in ft_data.columns:
+        y_rot = ft_data['rel_vec_world_y'].values
+        z_rot = ft_data['rel_vec_world_z'].values
+        x_rot = ft_data['rel_vec_world_x'].values if 'rel_vec_world_x' in ft_data.columns else np.zeros_like(y_rot)
+    else:
+        # Fallback to indices (standard Fictrac)
+        # 6, 7, 8 are rot angles? No, 6,7,8 are usually x,y,z?
+        # dataio.py used 5, 6, 7 for x, y, z
+        x_rot = ft_data.iloc[:, 5].values
+        y_rot = ft_data.iloc[:, 6].values
+        z_rot = ft_data.iloc[:, 7].values
+
+    # Calculate FPS for velocity conversion
+    fps = 1 / np.mean(np.diff(timestamps)) if len(timestamps) > 1 else 50.0
+
+    xrot_deg = np.rad2deg(x_rot) * fps
+    yrot_deg = np.rad2deg(y_rot) * fps
+    zrot_deg = np.rad2deg(z_rot) * fps
+
+    # Calculate window length based on duration
+    window_length = int(filter_duration * fps)
+    if window_length % 2 == 0:
+        window_length += 1
+    
+    # Ensure window_length is at least polyorder + 2
+    if window_length < filter_polyorder + 2:
+        print(f'Warning: Filter window length ({window_length}) is too short for polyorder ({filter_polyorder}). Setting to polyorder + 2.')
+        window_length = filter_polyorder + 2
+    
+    xrot_filt = savgol_filter(xrot_deg, window_length, filter_polyorder)
+    yrot_filt = savgol_filter(yrot_deg, window_length, filter_polyorder)
+    zrot_filt = savgol_filter(zrot_deg, window_length, filter_polyorder)
+
+    walking_mag = np.sqrt(xrot_filt**2 + yrot_filt**2 + zrot_filt**2)
+
+    if exclude_thresh is not None:
+        if isinstance(exclude_thresh, (int, float)):
+            exclude_mask = walking_mag > exclude_thresh
+        elif isinstance(exclude_thresh, (list, np.ndarray)) and len(exclude_thresh) == 3:
+            exclude_mask = (np.abs(xrot_filt) > exclude_thresh[0]) | \
+                                    (np.abs(yrot_filt) > exclude_thresh[1]) | \
+                                    (np.abs(zrot_filt) > exclude_thresh[2])
+        elif callable(exclude_thresh):
+            exclude_mask = exclude_thresh(x=xrot_filt, y=yrot_filt, z=zrot_filt)
+        else:
+            raise ValueError('Unrecognized exclude_thresh: {}'.format(exclude_thresh))
+        
+        print(f'process_fictrac_data: Excluding {np.sum(exclude_mask) / len(exclude_mask) * 100:.2f}% of timepoints based on exclude_thresh.')
+        xrot_filt[exclude_mask] = np.nan
+        yrot_filt[exclude_mask] = np.nan
+        zrot_filt[exclude_mask] = np.nan
+        walking_mag[exclude_mask] = np.nan
+
+    ball_circumference = np.pi * ball_diameter  # mm
+    fwd_vel = (yrot_filt/360) * ball_circumference  # deg/sec --> mm/sec
+    lat_vel = (xrot_filt/360) * ball_circumference  # deg/sec --> mm/sec (leftward is positive)
+    turning_vel = zrot_filt  # deg/sec (left turn / clockwise is positive)
+    
+    return {
+        'timestamps': timestamps,
+        'fwd_vel': fwd_vel, # mm/sec
+        'lat_vel': lat_vel, # mm/sec (leftward is positive)
+        'turning_vel': turning_vel, # deg/sec (left turn / clockwise is positive)
+        'walking_mag': walking_mag, # deg/sec
+        'xrot_filt': xrot_filt, # deg/sec
+        'yrot_filt': yrot_filt, # deg/sec
+        'zrot_filt': zrot_filt # deg/sec
+    }
+
 def load_fictrac_data(ID:ImagingDataObject, 
                       ft_data_path, 
+                      timestamps=None,
                       exclude_thresh=None, 
                       binarizing_var_name='walking_mag',
                       normalization='none',
                       baseline_period='pre',
+                      ball_diameter=9,
                       show_qc=True):
     """
     Load and process FicTrac data from .dat file.
     Args:
         ID: ImagingDataObject
         ft_data_path: path to FicTrac .dat file
+        timestamps: timestamps to use instead of the ones in the FicTrac file
         exclude_thresh: threshold for excluding high rotation values (deg/sec)
             If None, no exclusion is performed.
             Any time point with walking_mag above this threshold in magnitude is set to nan.
@@ -224,6 +361,7 @@ def load_fictrac_data(ID:ImagingDataObject,
             list of 2-tuples: e.g. [(-2.0, -0.5), (5.0, 6.0)] specifying time
                                 windows in seconds relative to stimulus onset (0s).
                                 Pre-stimulus times are negative.
+        ball_diameter: diameter of ball in mm
         show_qc: whether to show QC plots
     Returns:
         behavior_data: dict with behavior data
@@ -233,68 +371,33 @@ def load_fictrac_data(ID:ImagingDataObject,
 
     # exclude_thresh: deg per sec
     ft_data = pd.read_csv(ft_data_path, header=None)
-
-    frame = ft_data.iloc[:, 0]
-    timestamp = ft_data.iloc[:, 21].values / 1e3  # msec -> sec
-    timestamp = timestamp - timestamp[0]
-    fps = 1 / np.mean(np.diff(timestamp))
-
-    xrot = np.rad2deg(ft_data.iloc[:, 5]) * fps  # rot  --> deg/sec
-    yrot = np.rad2deg(ft_data.iloc[:, 6]) * fps  # rot  --> deg/sec
-    zrot = np.rad2deg(ft_data.iloc[:, 7]) * fps  # rot  --> deg/sec
-
-    xrot_filt = savgol_filter(xrot, 151, 3)
-    yrot_filt = savgol_filter(yrot, 151, 3)
-    zrot_filt = savgol_filter(zrot, 151, 3)
-
-    walking_mag = np.sqrt(xrot_filt**2 + yrot_filt**2 + zrot_filt**2)
-
-    if exclude_thresh is not None:
-        # Filter to remove timepoints when tracking is lost
-
-        # if exclude_thresh is a single number:
-        if isinstance(exclude_thresh, (int, float)):
-            exclude_mask = walking_mag > exclude_thresh
-        # if exclude_thresh is an array of thresholds for each axis:
-        elif isinstance(exclude_thresh, (list, np.ndarray)) and len(exclude_thresh) == 3:
-            exclude_mask = (np.abs(xrot_filt) > exclude_thresh[0]) | \
-                                    (np.abs(yrot_filt) > exclude_thresh[1]) | \
-                                    (np.abs(zrot_filt) > exclude_thresh[2])
-        # if exclude_thresh is a function:
-        elif callable(exclude_thresh):
-            exclude_mask = exclude_thresh(x=xrot_filt, y=yrot_filt, z=zrot_filt)
-        else:
-            raise ValueError('Unrecognized exclude_thresh: {}'.format(exclude_thresh))
-        
-        # print percent of timepoints excluded
-        print(f'load_fictrac_data: Excluding {np.sum(exclude_mask) / len(exclude_mask) * 100:.2f}% of timepoints based on exclude_thresh.')
-        xrot_filt[exclude_mask] = np.nan
-        yrot_filt[exclude_mask] = np.nan
-        zrot_filt[exclude_mask] = np.nan
-        walking_mag[exclude_mask] = np.nan
-
-    # Compute inferred forward walking speed based on y ball rotation and ball size
-    ball_diameter = 9  # mm
-    ball_circumference = np.pi * ball_diameter  # mm
-    fwd_vel = (yrot_filt/360) * ball_circumference  # deg/sec --> mm/sec
     
-    turning_vel = zrot_filt  # deg/sec
+    # Use shared processing logic
+    processed = process_fictrac_data(ft_data, exclude_thresh=exclude_thresh, timestamps=timestamps, ball_diameter=ball_diameter)
+    
+    timestamps = processed['timestamps']
+    fwd_vel = processed['fwd_vel']
+    turning_vel = processed['turning_vel']
+    walking_mag = processed['walking_mag']
+    xrot_filt = processed['xrot_filt']
+    yrot_filt = processed['yrot_filt']
+    zrot_filt = processed['zrot_filt']
 
     # Downsample from camera frame rate to imaging frame rate
     # fwd_vel_ds = resample(fwd_vel, len(imaging_time_vector))
     # turning_vel_ds = resample(turning_vel, len(imaging_time_vector))
     # walking_mag_ds = resample(walking_mag, len(imaging_time_vector))
     
-    def downsample_to_imaging_rate(variable, timestamp, imaging_time_vector):
+    def downsample_to_imaging_rate(variable, timestamps, imaging_time_vector):
         # # Convert to pandas Series with datetime index
-        # df_raw = pd.Series(variable, index=pd.to_datetime(timestamp))
+        # df_raw = pd.Series(variable, index=pd.to_datetime(timestamps))
         # target_index = pd.to_datetime(imaging_time_vector)
         # print(target_index)
         # freq_str = pd.infer_freq(target_index)
         # if freq_str is None:
         #     print('Warning: Could not infer frequency of imaging time vector. Using mean sampling interval instead.')
         # # 1. Resample and Aggregate (Mean ignores NaNs by default)
-        # # 'label' and 'closed' determine if the bin starts or ends at the timestamp
+        # # 'label' and 'closed' determine if the bin starts or ends at the timestamps
         # resampled = df_raw.resample(freq_str, label='left', closed='left').mean()
         # # 2. Reindex to force strict alignment with your numpy array
         # # This handles cases where resample might skip empty periods or add extra ones
@@ -307,9 +410,9 @@ def load_fictrac_data(ID:ImagingDataObject,
         downsampled_values = resample(y_filled, len(imaging_time_vector))
         return downsampled_values
 
-    fwd_vel_ds = downsample_to_imaging_rate(fwd_vel, timestamp, imaging_time_vector)
-    turning_vel_ds = downsample_to_imaging_rate(turning_vel, timestamp, imaging_time_vector)
-    walking_mag_ds = downsample_to_imaging_rate(walking_mag, timestamp, imaging_time_vector)
+    fwd_vel_ds = downsample_to_imaging_rate(fwd_vel, timestamps, imaging_time_vector)
+    turning_vel_ds = downsample_to_imaging_rate(turning_vel, timestamps, imaging_time_vector)
+    walking_mag_ds = downsample_to_imaging_rate(walking_mag, timestamps, imaging_time_vector)
 
     print(f"Pre-ds Nan values: {np.sum(np.isnan(turning_vel))} / {np.size(turning_vel)}")
     print(f"Post-ds Nan values: {np.sum(np.isnan(turning_vel_ds))} / {np.size(turning_vel_ds)}")
@@ -375,7 +478,7 @@ def load_fictrac_data(ID:ImagingDataObject,
                      'fwd_vel_amp': fwd_vel_amp,
                      'is_behaving': is_behaving,  # n trials
                      'thresh': thresh,
-                     'timestamp': timestamp,  # sec
+                     'timestamps': timestamps,  # sec
                      'xrot_filt': xrot_filt,
                      'yrot_filt': yrot_filt,
                      'zrot_filt': zrot_filt,

@@ -291,7 +291,7 @@ class TimeSeriesPlotter(QWidget):
         self.fwd_container.setLayout(self.fwd_layout)
         self.layout.addWidget(self.fwd_container)
         
-        self.plot_fwd = pg.PlotWidget(title="Forward Velocity", viewBox=CustomViewBox())
+        self.plot_fwd = pg.PlotWidget(title="Forward Velocity (mm/s)", viewBox=CustomViewBox())
         self.fwd_layout.addWidget(self.plot_fwd)
         self.plot_fwd.addLegend()
         self.time_line_fwd = pg.InfiniteLine(angle=90, movable=False, pen='r')
@@ -317,7 +317,7 @@ class TimeSeriesPlotter(QWidget):
         self.turn_container.setLayout(self.turn_layout)
         self.layout.addWidget(self.turn_container)
 
-        self.plot_turn = pg.PlotWidget(title="Turning Velocity", viewBox=CustomViewBox())
+        self.plot_turn = pg.PlotWidget(title="Turning (left / CW) Velocity (deg/s)", viewBox=CustomViewBox())
         self.turn_layout.addWidget(self.plot_turn)
         self.plot_turn.addLegend()
         self.time_line_turn = pg.InfiniteLine(angle=90, movable=False, pen='r')
