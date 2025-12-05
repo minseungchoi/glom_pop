@@ -11,11 +11,11 @@ from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
 import functools
 from scipy.signal import savgol_filter
-from gui_widgets import TimeSeriesPlotter, VideoViewer, DataLoader, PlaybackControl, StimulusViewer
+from .widgets import TimeSeriesPlotter, VideoViewer, DataLoader, PlaybackControl, StimulusViewer
 
 from visanalysis.analysis.imaging_data import ImagingDataObject
 from visanalysis.util import h5io
-from glom_pop import dataio
+from . import utils
 
 class MultiModalVisualizer:
     def __init__(self, no_brain=False, series_name=None):
@@ -122,7 +122,7 @@ class MultiModalVisualizer:
         # Fallback to XML
         if self.brain_timestamps is None and brain_xml_path and os.path.exists(brain_xml_path):
             print(f"Loading metadata from {brain_xml_path}...")
-            self.brain_metadata = dataio.get_bruker_metadata(brain_xml_path)
+            self.brain_metadata = utils.get_bruker_metadata(brain_xml_path)
             self.brain_timestamps = np.array(self.brain_metadata['frame_times'])
         elif self.brain_timestamps is None:
             print("No metadata (XML) loaded.")
@@ -481,7 +481,7 @@ class MultiModalVisualizer:
         self.playback_speed = value / 10.0
         # print(f"Playback speed set to {self.playback_speed}x")
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--hdf5_file', type=str, help='Path to HDF5 stimulus file')
     parser.add_argument('--no-brain', action='store_true', help='Skip loading brain volume')
@@ -569,3 +569,6 @@ if __name__ == "__main__":
             traceback.print_exc()
         
     napari.run()
+
+if __name__ == "__main__":
+    main()
