@@ -317,18 +317,27 @@ def load_fictrac_data(ID:ImagingDataObject,
     if binarizing_var_name == 'walking_mag':
         binarizing_var = walking_mag
         binarizing_var_ds = walking_mag_ds
+
+        thresh = filters.threshold_li(binarizing_var)
+        binary_behavior = (binarizing_var > thresh).astype('int')
+        binary_behavior_ds = (binarizing_var_ds > thresh).astype('int')
     elif binarizing_var_name == 'fwd_vel':
         binarizing_var = fwd_vel
         binarizing_var_ds = fwd_vel_ds
+
+        thresh = filters.threshold_li(binarizing_var)
+        binary_behavior = (binarizing_var > thresh).astype('int')
+        binary_behavior_ds = (binarizing_var_ds > thresh).astype('int')
     elif binarizing_var_name == 'turning_vel':
         binarizing_var = turning_vel
         binarizing_var_ds = turning_vel_ds
+
+        thresh = filters.threshold_li(np.abs(binarizing_var))
+        binary_behavior = (np.abs(binarizing_var) > thresh).astype('int')
+        binary_behavior_ds = (np.abs(binarizing_var_ds) > thresh).astype('int')
     else:
         raise ValueError('Unrecognized binarizing_var_name: {}'.format(binarizing_var_name))
 
-    thresh = filters.threshold_li(binarizing_var)
-    binary_behavior = (binarizing_var > thresh).astype('int')
-    binary_behavior_ds = (binarizing_var_ds > thresh).astype('int')
     _, behavior_binary_matrix = ID.getEpochResponseMatrix(binary_behavior_ds[np.newaxis, :],
                                                           normalization=normalization, baseline_period=baseline_period)
 
