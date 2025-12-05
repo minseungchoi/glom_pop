@@ -5,18 +5,19 @@ import time
 import numpy as np
 import pandas as pd
 import h5py
+import functools
 import napari
+from scipy.signal import savgol_filter
+
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QDockWidget
 from PyQt5.QtCore import QTimer, Qt
-import pyqtgraph as pg
-import functools
-from scipy.signal import savgol_filter
-from .widgets import TimeSeriesPlotter, VideoViewer, DataLoader, PlaybackControl, StimulusViewer
 
 from visanalysis.analysis.imaging_data import ImagingDataObject
 from visanalysis.util import h5io
-from . import utils
 from glom_pop import dataio
+
+from . import utils
+from .widgets import TimeSeriesPlotter, VideoViewer, DataLoader, PlaybackControl, StimulusViewer
 
 FICTRAC_FILTER_DURATION = 0.75
 FICTRAC_FILTER_POLYORDER = 3
