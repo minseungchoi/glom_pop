@@ -7,10 +7,9 @@ import pandas as pd
 import h5py
 import functools
 import napari
-from scipy.signal import savgol_filter
 
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QDockWidget
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QTimer
 
 from visanalysis.analysis.imaging_data import ImagingDataObject
 from visanalysis.util import h5io
