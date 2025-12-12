@@ -62,7 +62,9 @@ class DataLoader(QWidget):
         self.config = self.load_config()
 
     def load_config(self):
-        config_path = os.path.join(os.getcwd(), 'config.json')
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        mmviz_dir = os.path.dirname(current_dir) # data is expected to be in the parent dir of mmviz pkg
+        config_path = os.path.join(mmviz_dir, 'config.json')
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 return json.load(f)
@@ -82,11 +84,31 @@ class DataLoader(QWidget):
                 if 'Subjects' in f:
                     subjects_grp = f['Subjects']
                     # Assuming single subject or taking first
-                    subject_name = list(subjects_grp.keys())[0]
-                    if 'epoch_runs' in subjects_grp[subject_name]:
-                        epoch_runs = subjects_grp[subject_name]['epoch_runs']
-                        series_names = list(epoch_runs.keys())
-                        self.combo_series.addItems(series_names)
+                    series_items = []
+                    for subject_name in subjects_grp.keys():
+                         if 'epoch_runs' in subjects_grp[subject_name]:
+                            epoch_runs = subjects_grp[subject_name]['epoch_runs']
+                            
+                            for series_name in epoch_runs.keys():
+                                protocol_name = "Unknown"
+                                try:
+                                    series_grp = epoch_runs[series_name]
+                                    # Check for run_parameters where protocol info usually lives
+                                    # VisAnalysis often puts it in run_parameters group attributes
+                                    if 'protocol_ID' in series_grp.attrs:
+                                        p_id = series_grp.attrs['protocol_ID']
+                                        protocol_name = p_id.decode('utf-8') if isinstance(p_id, bytes) else p_id
+                                except Exception:
+                                    pass
+                                
+                                label = f"({series_name}) Subject {subject_name}: {protocol_name}"
+                                series_items.append((label, series_name))
+                    
+                    # Sort by series name
+                    series_items.sort(key=lambda x: x[1])
+                    
+                    for label, data in series_items:
+                        self.combo_series.addItem(label, userData=data)
         except Exception as e:
             self.lbl_status.setText(f"Error reading HDF5: {str(e)}")
 
@@ -103,17 +125,21 @@ class DataLoader(QWidget):
             pass
             
         # 2. Extract Series Number
-        series_name = self.combo_series.currentText()
+        series_name = self.combo_series.currentData()
         series_num = "3" # Default
         series_3d = "003" # Default
         
         if series_name:
-            # Expected: series_003
+            # Expected: series_003 or just "3"
             try:
-                parts = series_name.split('_')
-                if len(parts) > 1 and parts[-1].isdigit():
-                    series_3d = parts[-1]
-                    series_num = str(int(series_3d))
+                if str(series_name).isdigit():
+                    series_num = str(series_name)
+                    series_3d = f"{int(series_num):03d}"
+                else:
+                    parts = str(series_name).split('_')
+                    if len(parts) > 1 and parts[-1].isdigit():
+                        series_3d = parts[-1]
+                        series_num = str(int(series_3d))
             except:
                 pass
         
@@ -129,7 +155,6 @@ class DataLoader(QWidget):
                     pattern = raw_pattern # Fallback if keys don't match
                 
                 # Search
-                # Pattern might be absolute path now
                 if os.path.isabs(pattern):
                     search_pattern = pattern
                 else:
@@ -161,7 +186,7 @@ class DataLoader(QWidget):
 
     def load_data(self):
         hdf5_path = self.edit_hdf5.text()
-        series_name = self.combo_series.currentText()
+        series_name = self.combo_series.currentData()
         
         if not hdf5_path or not series_name:
             self.lbl_status.setText("Please select HDF5 file and Series.")
@@ -193,7 +218,26 @@ class DataLoader(QWidget):
             self.populate_series(hdf5_path)
         
         if series_name:
-            index = self.combo_series.findText(series_name)
+            index = self.combo_series.findData(series_name)
+            
+            # If not found, try formatted versions (e.g. '10' -> 'series_010')
+            if index == -1:
+                try:
+                    s_str = str(series_name)
+                    num = None
+                    if s_str.isdigit():
+                        num = int(s_str)
+                    elif s_str.startswith('series_'):
+                         parts = s_str.split('_')
+                         if parts[-1].isdigit():
+                            num = int(parts[-1])
+                    
+                    if num is not None:
+                         candidate = f"series_{num:03d}"
+                         index = self.combo_series.findData(candidate)
+                except:
+                    pass
+
             if index >= 0:
                 self.combo_series.setCurrentIndex(index)
         
@@ -507,6 +551,12 @@ class VideoViewer(QWidget):
             # Transpose for pyqtgraph (col, row, channel)
             frame = np.transpose(frame, (1, 0, 2))
             self.image_view.setImage(frame)
+
+    def clear_video(self):
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+        self.image_view.clear()
 
     def set_time(self, time_sec):
         if self.cap:

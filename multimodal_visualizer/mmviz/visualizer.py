@@ -95,6 +95,7 @@ class MultiModalVisualizer:
                     series_number = int(series_name.split('_')[-1])
                 
                 self.ID = ImagingDataObject(hdf5_path, series_number, quiet=True)
+                self.start_time_unix = self.ID.getRunParameters(param_key='run_start_unix_time')
                 print(f"Initialized ImagingDataObject for series {series_number}")
             except Exception as e:
                 print(f"Failed to initialize ImagingDataObject: {e}")
@@ -130,14 +131,15 @@ class MultiModalVisualizer:
             self.brain_metadata = utils.get_bruker_metadata(brain_xml_path)
             self.brain_timestamps = np.array(self.brain_metadata['frame_times'])
         elif self.brain_timestamps is None:
-            print("No metadata (XML) loaded.")
+            print(f"No metadata (XML) loaded from {brain_xml_path}.")
         
         # 3. Load Video
         if video_path and os.path.exists(video_path):
             print(f"Loading Video from {video_path}...")
             self.video_widget.load_video(video_path)
         else:
-            print("No video loaded.")
+            print(f"No video loaded from {video_path}.")
+            self.video_widget.clear_video()
 
         # Load camera timestamps
         if cam_ts_path and os.path.exists(cam_ts_path):
@@ -146,42 +148,76 @@ class MultiModalVisualizer:
             
             # Use the first cpu timestamp as the start time, and use it to convert camera timestamps to unix timestamps
             self.video_timestamps_relative = cam_ts_data[:, 1] - cam_ts_data[0, 1]
-            self.video_timestamps_unix = cam_ts_data[0, 2] + self.video_timestamps_relative
-            self.start_time_unix = cam_ts_data[0, 2]
+            self.video_timestamps_unix = self.start_time_unix + self.video_timestamps_relative
             self.fps = 1 / np.mean(np.diff(self.video_timestamps_relative))
         else:
-            print("No camera timestamps loaded.")
+            print(f"No camera timestamps loaded from {cam_ts_path}.")
             self.video_timestamps_relative = None
             self.video_timestamps_unix = None
-            self.start_time_unix = None
+        
+        # Try Loading Robust Timing from ID (Strobe)
+        # This overrides fps and video_timestamps_relative
+        # And updates video_timestamps_unix if start_time_unix is known
+        if self.ID:
+            try:
+                self.ID.quiet = False
+                behavior_timing = self.ID.getBehaviorTiming()
+                if 'fictrac' in behavior_timing:
+                    robust_timestamps = behavior_timing['fictrac']['frame_time'] # relative to start of Bruker acquisition
+                    
+                    self.video_timestamps_relative = robust_timestamps
+                    self.fps = behavior_timing['fictrac'].get('frame_rate', self.fps)
+                    print(f"Updated video timing from behavior strobe. FPS: {self.fps:.2f}")
+                    
+                    self.video_timestamps_unix = self.start_time_unix + robust_timestamps
+
+            except Exception as e:
+                print(f"Failed to load robust timing from ID: {e}")
+                import traceback
+                traceback.print_exc()
 
         # 4. Load Fictrac
         self.fictrac_data = None
         # Try loading from ID first
         try:
-            # Manually read fictrac data from HDF5 using ID context
-            # We can't use getBehaviorData easily as it slices by epoch
-            # But we can use h5py with ID.file_path
-            
-            with h5py.File(self.ID.file_path, 'r') as f:
-                # Find series group
-                find_partial = functools.partial(h5io.find_series, sn=self.ID.series_number)
-                series_grp = f.visititems(find_partial)
-                
-                if series_grp and 'behavior' in series_grp and 'fictrac_data' in series_grp['behavior']:
-                    ft_dset = series_grp['behavior']['fictrac_data']
-                    header = ft_dset.attrs.get('fictrac_data_header')
-                    if header is not None:
-                        header = [h.decode('utf-8') if isinstance(h, bytes) else h for h in header]
-                        ft_data = pd.DataFrame(ft_dset[:], columns=header)
-                        self.fictrac_data = dataio.process_fictrac_data(
-                            ft_data,
-                            timestamps=self.video_timestamps_unix,
-                            filter_duration=FICTRAC_FILTER_DURATION,
-                            filter_polyorder=FICTRAC_FILTER_POLYORDER
-                        )
-                        if self.fictrac_data:
-                            print("Loaded Fictrac data from ImagingDataObject.")
+             # Now load the data values (velocity etc) from ID
+             # Use self.video_timestamps_unix if available, otherwise relative?
+             # visualizer generally expects unix timestamps for plotting
+             
+             fictrac_timestamps = self.video_timestamps_unix
+             if fictrac_timestamps is None and self.video_timestamps_relative is not None:
+                 fictrac_timestamps = self.video_timestamps_relative
+
+             if fictrac_timestamps is not None:
+                with h5py.File(self.ID.file_path, 'r') as f:
+                    find_partial = functools.partial(h5io.find_series, sn=self.ID.series_number)
+                    series_grp = f.visititems(find_partial)
+                    
+                    if series_grp and 'behavior' in series_grp and 'fictrac_data' in series_grp['behavior']:
+                        ft_dset = series_grp['behavior']['fictrac_data']
+                        header = ft_dset.attrs.get('fictrac_data_header')
+                        if header is not None:
+                            header = [h.decode('utf-8') if isinstance(h, bytes) else h for h in header]
+                            ft_data = pd.DataFrame(ft_dset[:], columns=header)
+                            
+                            # Check if the length of fictrac_timestamps is the same as the length of ft_data
+                            if len(fictrac_timestamps) != len(ft_data):
+                                print(f"Warning: fictrac_timestamps has different length than ft_data. fictrac_timestamps: {len(fictrac_timestamps)}, ft_data: {len(ft_data)}")
+                                
+                                # Trim data or timestamps to match length
+                                n_frames = min(len(ft_data), len(fictrac_timestamps))                            
+                                ft_data = ft_data.iloc[:n_frames]
+                                fictrac_timestamps = fictrac_timestamps[:n_frames]
+                            
+                            self.fictrac_data = dataio.process_fictrac_data(
+                                ft_data,
+                                timestamps=fictrac_timestamps,
+                                filter_duration=FICTRAC_FILTER_DURATION,
+                                filter_polyorder=FICTRAC_FILTER_POLYORDER
+                            )
+                            if self.fictrac_data:
+                                print(f"Loaded Fictrac data from ImagingDataObject (using established timing: {len(fictrac_timestamps)} frames)")
+
         except Exception as e:
             print(f"Failed to load Fictrac from ID: {e}")
 
@@ -435,7 +471,10 @@ def main():
         print(f"Auto-loading from HDF5: {args.hdf5_file}...")
         try:
             # Load Config
-            config_path = os.path.join(os.getcwd(), 'config.json')
+            # Load Config
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            mmviz_dir = os.path.dirname(current_dir) # data is expected to be in the parent dir of mmviz pkg
+            config_path = os.path.join(mmviz_dir, 'config.json')
             config = {"patterns": {}}
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
@@ -457,10 +496,14 @@ def main():
             
             if series_name:
                 try:
-                    parts = series_name.split('_')
-                    if len(parts) > 1 and parts[-1].isdigit():
-                        series_3d = parts[-1]
-                        series_num = str(int(series_3d))
+                    if series_name.isdigit():
+                        series_num = series_name
+                        series_3d = f"{int(series_num):03d}"
+                    else:
+                        parts = series_name.split('_')
+                        if len(parts) > 1 and parts[-1].isdigit():
+                            series_3d = parts[-1]
+                            series_num = str(int(series_3d))
                 except:
                     pass
             
@@ -489,6 +532,7 @@ def main():
                     else:
                         print(f"Warning: Could not find {key} matching pattern: {pattern}")
             
+            print(resolved_paths)
             # 4. Load Data
             viz.load_data(
                 hdf5_path=args.hdf5_file,

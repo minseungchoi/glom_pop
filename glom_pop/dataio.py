@@ -219,12 +219,13 @@ def process_fictrac_data(ft_data,
         dict with processed data
     """
     # 1. Handle Timestamps
-    if len(timestamps) != len(ft_data):
-        warnings.warn('DataIO: Timestamps do not match Fictrac data length. Using Fictrac timestamps.')
-        timestamps = None
-    
     if timestamps is not None:
         print('DataIO: Using provided timestamps instead of Fictrac timestamps.')
+        if len(timestamps) != len(ft_data):
+            warnings.warn(f'DataIO: Timestamps do not match Fictrac data length. Trimming to match. Fictrac: {len(ft_data)}, Timestamps: {len(timestamps)}')
+            n_frames = min(len(ft_data), len(timestamps))                            
+            ft_data = ft_data.iloc[:n_frames]
+            timestamps = timestamps[:n_frames]
     else:
         # Try to find timestamp column
         if 'timestamp' in ft_data.columns:
@@ -371,6 +372,11 @@ def load_fictrac_data(ID:ImagingDataObject,
 
     # exclude_thresh: deg per sec
     ft_data = pd.read_csv(ft_data_path, header=None)
+
+    if timestamps is None:
+        # Try getting fictrac timing from camera strobes stored in ID
+        print("Getting camera timestamps from ID...")
+        timestamps = ID.getBehaviorTiming()['fictrac']['frame_time']
     
     # Use shared processing logic
     processed = process_fictrac_data(ft_data, exclude_thresh=exclude_thresh, timestamps=timestamps, ball_diameter=ball_diameter)
