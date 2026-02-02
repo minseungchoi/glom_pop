@@ -335,7 +335,8 @@ def load_fictrac_data(ID:ImagingDataObject,
                       ft_data_path, 
                       timestamps=None,
                       exclude_thresh=None, 
-                      binarizing_var_name='walking_mag',
+                      classification_var_name='walking_mag',
+                      classification_method='auto',
                       normalization='none',
                       baseline_period='pre',
                       ball_diameter=9,
@@ -349,8 +350,19 @@ def load_fictrac_data(ID:ImagingDataObject,
         exclude_thresh: threshold for excluding high rotation values (deg/sec)
             If None, no exclusion is performed.
             Any time point with walking_mag above this threshold in magnitude is set to nan.
-        binarizing_var_name: variable to use for thresholding and binarizing behavior
-            Options: 'walking_mag', 'fwd_vel', 'turning_vel'
+        classification_var_name: variable to use for threshold-based classification.
+            Trial mean values of this variable are compared to thresholds.
+            Options: 'walking_mag', 'fwd_vel', 'turning_vel', 'lat_vel'
+        classification_method: method to classify trials as stationary vs locomoting
+            'auto': use Li threshold on classification_var_name to determine threshold
+            dict: {'stationary_upper': float, 'locomoting_lower': float} - two-threshold approach
+                  Stationary: trial mean <= stationary_upper
+                  Locomoting: trial mean >= locomoting_lower  
+                  Ambiguous: trials in between (locomotion_state = -1)
+            callable: f(behavior_matrices) -> int_array with 0=stationary, 1=locomoting, -1=ambiguous
+                      behavior_matrices dict contains: 'walking_mag', 'turning_vel', 'fwd_vel', 'lat_vel'
+                      Each value is a response matrix of shape (1, n_trials, n_time)
+                      Can also return dict with 'stationary' and 'locomoting' bool arrays
         normalization: method to normalize the signal
             'dff': convert from raw intensity value to dF/F based on mean of pre_time
             'zscore': z-score the signal based on mean and std of pre_time
@@ -383,6 +395,7 @@ def load_fictrac_data(ID:ImagingDataObject,
     
     timestamps = processed['timestamps']
     fwd_vel = processed['fwd_vel']
+    lat_vel = processed['lat_vel']
     turning_vel = processed['turning_vel']
     walking_mag = processed['walking_mag']
     xrot_filt = processed['xrot_filt']
@@ -417,38 +430,28 @@ def load_fictrac_data(ID:ImagingDataObject,
         return downsampled_values
 
     fwd_vel_ds = downsample_to_imaging_rate(fwd_vel, timestamps, imaging_time_vector)
+    lat_vel_ds = downsample_to_imaging_rate(lat_vel, timestamps, imaging_time_vector)
     turning_vel_ds = downsample_to_imaging_rate(turning_vel, timestamps, imaging_time_vector)
     walking_mag_ds = downsample_to_imaging_rate(walking_mag, timestamps, imaging_time_vector)
 
     print(f"Pre-ds Nan values: {np.sum(np.isnan(turning_vel))} / {np.size(turning_vel)}")
     print(f"Post-ds Nan values: {np.sum(np.isnan(turning_vel_ds))} / {np.size(turning_vel_ds)}")
 
-    if binarizing_var_name == 'walking_mag':
-        binarizing_var = walking_mag
-        binarizing_var_ds = walking_mag_ds
-
-        thresh = filters.threshold_li(binarizing_var)
-        binary_behavior = (binarizing_var > thresh).astype('int')
-        binary_behavior_ds = (binarizing_var_ds > thresh).astype('int')
-    elif binarizing_var_name == 'fwd_vel':
-        binarizing_var = fwd_vel
-        binarizing_var_ds = fwd_vel_ds
-
-        thresh = filters.threshold_li(binarizing_var)
-        binary_behavior = (binarizing_var > thresh).astype('int')
-        binary_behavior_ds = (binarizing_var_ds > thresh).astype('int')
-    elif binarizing_var_name == 'turning_vel':
-        binarizing_var = turning_vel
-        binarizing_var_ds = turning_vel_ds
-
-        thresh = filters.threshold_li(np.abs(binarizing_var))
-        binary_behavior = (np.abs(binarizing_var) > thresh).astype('int')
-        binary_behavior_ds = (np.abs(binarizing_var_ds) > thresh).astype('int')
+    # Select classification variable (used for threshold classification and QC plots)
+    if classification_var_name == 'walking_mag':
+        classification_var = walking_mag
+        classification_var_ds = walking_mag_ds
+    elif classification_var_name == 'fwd_vel':
+        classification_var = fwd_vel
+        classification_var_ds = fwd_vel_ds
+    elif classification_var_name == 'turning_vel':
+        classification_var = np.abs(turning_vel)
+        classification_var_ds = np.abs(turning_vel_ds)
+    elif classification_var_name == 'lat_vel':
+        classification_var = np.abs(lat_vel)
+        classification_var_ds = np.abs(lat_vel_ds)
     else:
-        raise ValueError('Unrecognized binarizing_var_name: {}'.format(binarizing_var_name))
-
-    _, behavior_binary_matrix = ID.getEpochResponseMatrix(binary_behavior_ds[np.newaxis, :],
-                                                          normalization=normalization, baseline_period=baseline_period)
+        raise ValueError('Unrecognized classification_var_name: {}'.format(classification_var_name))
 
     _, walking_response_matrix = ID.getEpochResponseMatrix(walking_mag_ds[np.newaxis, :],
                                                            normalization=normalization, baseline_period=baseline_period)
@@ -459,7 +462,63 @@ def load_fictrac_data(ID:ImagingDataObject,
     _, fwd_vel_response_matrix = ID.getEpochResponseMatrix(fwd_vel_ds[np.newaxis, :],
                                                          normalization=normalization, baseline_period=baseline_period)
 
-    is_behaving = ID.getResponseAmplitude(behavior_binary_matrix, metric='mean') > 0.25
+    _, lat_vel_response_matrix = ID.getEpochResponseMatrix(lat_vel_ds[np.newaxis, :],
+                                                         normalization=normalization, baseline_period=baseline_period)
+
+    # Create response matrix for classification variable
+    _, classification_response_matrix = ID.getEpochResponseMatrix(classification_var_ds[np.newaxis, :],
+                                                           normalization=normalization, baseline_period=baseline_period)
+
+    # Get trial mean values from classification variable for threshold-based classification
+    trial_mean_values = ID.getResponseAmplitude(classification_response_matrix, metric='mean')
+    
+    # Apply classification method to determine locomotion state per trial
+    # locomotion_state: 0=stationary, 1=walking, -1=ambiguous
+    # stationary_thresh and locomoting_thresh are used for QC visualization
+    stationary_thresh = None
+    locomoting_thresh = None
+    
+    if classification_method == 'auto':
+        # Use Li threshold for both stationary upper and locomoting lower (same threshold)
+        auto_thresh = filters.threshold_li(classification_var)
+        stationary_thresh = auto_thresh
+        locomoting_thresh = auto_thresh
+        locomotion_state = (trial_mean_values > auto_thresh).astype('int')  # 0 or 1
+        is_locomoting = locomotion_state == 1
+    elif isinstance(classification_method, dict):
+        # Two-threshold approach
+        stationary_thresh = classification_method.get('stationary_upper')
+        locomoting_thresh = classification_method.get('locomoting_lower')
+        
+        if stationary_thresh is None or locomoting_thresh is None:
+            raise ValueError("classification_method dict must have 'stationary_upper' and 'locomoting_lower' keys")
+        
+        locomotion_state = np.full(trial_mean_values.shape, -1, dtype=int)  # Start as ambiguous
+        locomotion_state[trial_mean_values <= stationary_thresh] = 0  # Stationary
+        locomotion_state[trial_mean_values >= locomoting_thresh] = 1  # Locomoting
+        is_locomoting = locomotion_state == 1
+    elif callable(classification_method):
+        # Custom function receives dict with all behavior response matrices
+        behavior_matrices = {
+            'walking_mag': walking_response_matrix,
+            'turning_vel': turning_vel_response_matrix,
+            'fwd_vel': fwd_vel_response_matrix,
+            'lat_vel': lat_vel_response_matrix,
+        }
+        result = classification_method(behavior_matrices)
+        if isinstance(result, dict):
+            # Function returns {'stationary': bool_array, 'locomoting': bool_array}
+            n_trials = walking_response_matrix.shape[1]
+            locomotion_state = np.full((1, n_trials), -1, dtype=int)
+            locomotion_state[0, result.get('stationary', np.zeros(n_trials, dtype=bool))] = 0
+            locomotion_state[0, result.get('locomoting', np.zeros(n_trials, dtype=bool))] = 1
+        else:
+            # Function returns int array directly
+            locomotion_state = np.asarray(result, dtype=int)
+        is_locomoting = locomotion_state == 1
+    else:
+        raise ValueError(f'Unrecognized classification_method: {classification_method}')
+
     walking_amp = ID.getResponseAmplitude(walking_response_matrix, metric='mean')
     turning_vel_amp = ID.getResponseAmplitude(turning_vel_response_matrix, metric='mean')
     fwd_vel_amp = ID.getResponseAmplitude(fwd_vel_response_matrix, metric='mean')
@@ -472,18 +531,22 @@ def load_fictrac_data(ID:ImagingDataObject,
                      'walking_mag_ds': walking_mag_ds,  # n imaging frames
                      'fwd_vel': fwd_vel,  # mm/sec, shape=n video frames
                      'fwd_vel_ds': fwd_vel_ds,  # mm/sec, shape=n imaging frames
+                     'lat_vel': lat_vel,  # mm/sec, shape=n video frames (leftward positive)
+                     'lat_vel_ds': lat_vel_ds,  # mm/sec, shape=n imaging frames
                      'turning_vel': turning_vel,  # deg/sec, shape=n video frames
                      'turning_vel_ds': turning_vel_ds,  # deg/sec, shape=n imaging frames
-                     'behavior_binary_matrix': behavior_binary_matrix,  # 1 x trials x time
                      'walking_response_matrix': walking_response_matrix,  # 1 x trials x time
                      'turning_vel_response_matrix': turning_vel_response_matrix,  # 1 x trials x time
                      'fwd_vel_response_matrix': fwd_vel_response_matrix,  # 1 x trials x time
+                     'lat_vel_response_matrix': lat_vel_response_matrix,  # 1 x trials x time
                      'walking_amp': walking_amp,  # n trials
                      'walking_peak': walking_peak,
                      'turning_vel_amp': turning_vel_amp,
                      'fwd_vel_amp': fwd_vel_amp,
-                     'is_behaving': is_behaving,  # n trials
-                     'thresh': thresh,
+                     'is_locomoting': is_locomoting,  # n trials, bool array (True=locomoting)
+                     'locomotion_state': locomotion_state,  # n trials, int array (0=stationary, 1=locomoting, -1=ambiguous)
+                     'stationary_thresh': stationary_thresh,  # threshold for stationary classification
+                     'locomoting_thresh': locomoting_thresh,  # threshold for locomoting classification
                      'timestamps': timestamps,  # sec
                      'xrot_filt': xrot_filt,
                      'yrot_filt': yrot_filt,
@@ -491,12 +554,35 @@ def load_fictrac_data(ID:ImagingDataObject,
                      }
 
     if show_qc:
-        fh, ax = plt.subplots(1, 2, figsize=(8, 4))
-        ax[0].plot(binarizing_var)
-        ax[0].axhline(thresh, color='r')
-        ax[1].hist(binarizing_var, 100)
-        ax[1].axvline(thresh, color='r')
+        fh, ax = plt.subplots(1, 2, figsize=(10, 4))
+        
+        # Time series plot with thresholds
+        ax[0].plot(classification_var, alpha=0.7)
+        if stationary_thresh is not None:
+            ax[0].axhline(stationary_thresh, color='blue', linestyle='--', label=f'Stationary ≤ {stationary_thresh:.1f}')
+        if locomoting_thresh is not None:
+            ax[0].axhline(locomoting_thresh, color='red', linestyle='--', label=f'Locomoting ≥ {locomoting_thresh:.1f}')
         ax[0].set_title(f'{os.path.split(ID.file_path)[-1]}: {ID.series_number}')
+        ax[0].set_xlabel('Frame')
+        ax[0].set_ylabel(classification_var_name)
+        ax[0].legend(fontsize=8)
+        
+        # Histogram with thresholds
+        ax[1].hist(classification_var, 100, alpha=0.7)
+        if stationary_thresh is not None:
+            ax[1].axvline(stationary_thresh, color='blue', linestyle='--', label=f'Stationary ≤ {stationary_thresh:.1f}')
+        if locomoting_thresh is not None:
+            ax[1].axvline(locomoting_thresh, color='red', linestyle='--', label=f'Locomoting ≥ {locomoting_thresh:.1f}')
+        ax[1].set_xlabel(classification_var_name)
+        ax[1].set_ylabel('Count')
+        ax[1].legend(fontsize=8)
+        
+        # Add classification summary
+        n_stationary = np.sum(locomotion_state == 0)
+        n_locomoting = np.sum(locomotion_state == 1)
+        n_ambiguous = np.sum(locomotion_state == -1)
+        fh.suptitle(f'Trials: {n_stationary} stationary / {n_locomoting} locomoting / {n_ambiguous} ambiguous', fontsize=10)
+        fh.tight_layout()
 
         return behavior_data, fh
     else:
