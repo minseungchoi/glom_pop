@@ -18,7 +18,7 @@ from panglom_suite import plotting
 
 base_dir = dataio.get_config_file()['base_dir']
 
-meanbrain_tag = '20250510'
+meanbrain_tag = '20260217_rewrite'
 brain_dir = os.path.join(base_dir, 'mean_brain', meanbrain_tag)
 
 
@@ -138,10 +138,11 @@ def computeMeanbrain(reference_brain,
             moving_green = ants.smooth_image(moving_green, sigma=[1.0, 1.0, 0.0], sigma_in_physical_coordinates=False)
 
         reg_kwargs_local = dict(reg_kwargs)
-        supports_multivariate = (
-            type_of_transform == 'SyNOnly'
-            or (isinstance(type_of_transform, str) and type_of_transform.startswith('antsRegistrationSyN'))
-        )
+        # supports_multivariate = (
+        #     type_of_transform == 'SyNOnly'
+        #     or (isinstance(type_of_transform, str) and type_of_transform.startswith('antsRegistrationSyN'))
+        # )
+        supports_multivariate = False
         if supports_multivariate:
             reg_kwargs_local.setdefault(
                 'multivariate_extras',
@@ -218,78 +219,97 @@ brains, file_paths = preload_brain_images(brain_dir, do_bias_correction=False)
 
 # %% Compute meanbrain 0:
 # Affine smoothed brains, to get things roughly aligned
-meanbrain_0 = computeMeanbrain(reference_brain=reference_brain,
-                               brains=brains,
-                               file_paths=file_paths,
-                               type_of_transform='Rigid',
-                               smooth_reference=True,
-                               smooth_moving=True,
-                               plot_alignment_multipanel=False)
+meanbrain_0 = computeMeanbrain(
+    reference_brain=reference_brain,
+    brains=brains,
+    file_paths=file_paths,
+    type_of_transform='Rigid',
+    smooth_reference=True,
+    smooth_moving=True,
+    plot_alignment_multipanel=True
+)
 showBrain(meanbrain_0, stride=8)
 
 # %% Compute meanbrain 1:
 # Affine
-meanbrain_1 = computeMeanbrain(reference_brain=meanbrain_0,
-                               brains=brains,
-                               file_paths=file_paths,
-                               type_of_transform='Affine',
-                               smooth_reference=False,
-                               smooth_moving=False,
-                               plot_alignment_multipanel=False,
-                                aff_metric='MI',                # Mutual‑Information
-                                grad_step=0.1,
-                                aff_sampling=32,                # 32 histogram bins
-                                aff_sampling_strategy='Regular',
-                                reg_iterations=(1000, 500, 250, 0),
-                                shrink_factors=(8, 4, 2, 1),
-                                smoothing_sigmas=(3, 2, 1, 0),
-                                histogram_matching=False,
-                                verbose=True,
-                                )
-
+meanbrain_1 = computeMeanbrain(
+    reference_brain=meanbrain_0,
+    brains=brains,
+    file_paths=file_paths,
+    type_of_transform='Affine',
+    smooth_reference=True,
+    smooth_moving=True,
+    plot_alignment_multipanel=True,
+    aff_metric='MI',                # Mutual‑Information
+    grad_step=0.1,
+    aff_sampling=32,                # 32 histogram bins
+    aff_sampling_strategy='Regular',
+    reg_iterations=(1000, 500, 250, 0),
+    aff_shrink_factors=(8, 4, 2, 1),
+    aff_smoothing_sigmas=(3, 2, 1, 0),
+    histogram_matching=False,
+    verbose=False,
+)
 showBrain(meanbrain_1, stride=8)
 
 # %% Compute meanbrain 2:
-# Coarse SyN
-meanbrain_2 = computeMeanbrain(reference_brain=meanbrain_1,
-                               brains=brains,
-                               file_paths=file_paths,
-                               type_of_transform='SyN',
-                               smooth_reference=False,
-                               smooth_moving=False,
-                               plot_alignment_multipanel=False, 
-                                grad_step=0.10,                 # SyN[0.1,6,0]
-                                flow_sigma=6,
-                                total_sigma=0,
-                                syn_metric='CC',                # Cross‑Correlation
-                                syn_sampling=4,                 # CC radius
-                                reg_iterations=(50, 50, 20),
-                                shrink_factors=(4, 2, 1),
-                                smoothing_sigmas=(2, 1, 0),
-                                histogram_matching=False,
-                                )
+# Elastic SyN
+meanbrain_2 = computeMeanbrain(
+    reference_brain=meanbrain_1,
+    brains=brains,
+    file_paths=file_paths,
+    type_of_transform='ElasticSyN',
+    smooth_reference=True,
+    smooth_moving=True,
+    plot_alignment_multipanel=True, 
+    grad_step=0.20,                 # ElasticSyN[0.2,6,0]
+    flow_sigma=6,
+    total_sigma=0.75,
+    syn_metric='CC',                # Cross‑Correlation
+    syn_sampling=4,                 # CC radius
+    reg_iterations=(20, 10, 0),
+    histogram_matching=False,
+)
 showBrain(meanbrain_2, stride=8)
 
-# %% Compute final meanbrain:
-# Fine SyN
-meanbrain = computeMeanbrain(reference_brain=meanbrain_2,
-                             brains=brains,
-                             file_paths=file_paths,
-                             type_of_transform='SyNOnly',
-                             smooth_reference=False,
-                             smooth_moving=False,
-                             plot_alignment_multipanel=False, 
-                            grad_step=0.05,                 # SyN[0.05,3,0]
-                            flow_sigma=3,
-                            total_sigma=0,
-                            syn_metric='CC',
-                            syn_sampling=4,
-                            reg_iterations=(20, 10),        # one or two levels
-                            shrink_factors=(1, 1),
-                            smoothing_sigmas=(0, 0),
-                            histogram_matching=False,
-                            )
+# %% Compute meanbrain 3:
+# ElasticSyN Fine
+meanbrain_3 = computeMeanbrain(
+    reference_brain=meanbrain_2,
+    brains=brains,
+    file_paths=file_paths,
+    type_of_transform='ElasticSyN',
+    smooth_reference=False,
+    smooth_moving=False,
+    plot_alignment_multipanel=True, 
+    grad_step=0.10,                 # ElasticSyN[0.1,3,0]
+    flow_sigma=3,
+    total_sigma=0.5,
+    syn_metric='CC',                # Cross‑Correlation
+    syn_sampling=3,                 # CC radius
+    reg_iterations=(30, 15, 0),
+    histogram_matching=False,
+)
+showBrain(meanbrain_3, stride=8)
 
+# %% Compute final meanbrain:
+# SyN
+meanbrain = computeMeanbrain(
+    reference_brain=meanbrain_3,
+    brains=brains,
+    file_paths=file_paths,
+    type_of_transform='SyN',
+    smooth_reference=False,
+    smooth_moving=False,
+    plot_alignment_multipanel=True, 
+    grad_step=0.10,                 # SyN[0.1,6,0]
+    flow_sigma=3,
+    total_sigma=0,
+    syn_metric='CC',                # Cross‑Correlation
+    syn_sampling=2,                 # CC radius
+    reg_iterations=(30, 15, 1),
+    histogram_matching=False,
+)
 showBrain(meanbrain, stride=8)
 
 # %% Save final meanbrain
